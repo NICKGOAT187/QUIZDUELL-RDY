@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quizduell – Handy-Buzzer</title><style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;background:#100d1c;color:#f8f7ff}
+main{max-width:1000px;margin:auto;padding:20px}h1{margin:.2em 0;color:#e8c7ff}.panel{background:#211b32;border:1px solid #493d62;border-radius:16px;padding:16px;margin:12px 0}
+input,button,select{font:inherit;border-radius:10px;padding:12px;border:1px solid #6b5a89}input{background:#151021;color:white;max-width:100%;box-sizing:border-box}
+button{background:#8b5cf6;color:white;font-weight:700;cursor:pointer;margin:4px}button:disabled{opacity:.35;cursor:not-allowed}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#board{display:grid;grid-template-columns:repeat(6,minmax(100px,1fr));gap:8px;overflow:auto}.cell{min-height:62px}.used{opacity:.25;text-decoration:line-through}
+.small{color:#c9bedc}.score{display:flex;gap:8px;flex-wrap:wrap}.player{background:#34284a;border-radius:10px;padding:10px}.hidden{display:none}.question{font-size:1.35rem;font-weight:700}.buzz{width:100%;font-size:2rem;padding:25px;background:#dc2626}.good{background:#15803d}.bad{background:#b45309}
+@media(max-width:700px){#board{grid-template-columns:repeat(3,minmax(90px,1fr))}main{padding:12px}}
+</style></head><body><main>
+<h1>🏆 QUIZDUELL</h1><p class="small">6 Kategorien · 100–500 Punkte · gemeinsamer Spielcode · 10-Sekunden-Buzzer</p>
+<section class="panel" id="entry"><div class="row"><input id="name" maxlength="24" placeholder="Dein Name"><button id="create">Spiel erstellen (Host)</button></div>
+<div class="row"><input id="code" maxlength="5" placeholder="Spielcode"><button id="join">Beitreten</button></div><p id="message" role="status"></p></section>
+<section class="panel hidden" id="game"><div class="row"><b>Spielcode: <span id="roomcode"></span></b><button id="copy">Code kopieren</button><span id="role" class="small"></span></div>
+<div id="scores" class="score"></div><div id="hosttools" class="hidden"><button id="start">Spiel starten</button></div>
+<div id="boardwrap" class="panel hidden"><h2>Frage auswählen</h2><div id="board"></div></div>
+<div id="questionbox" class="panel hidden"><p class="small" id="qmeta"></p><div id="question" class="question"></div><p id="answer"></p><div id="buzzstatus"></div>
+<button id="buzz" class="buzz">🔔 BUZZERN!</button><div id="hostcontrols" class="hidden row"><button id="wrong" class="bad">Antwort falsch · 10 Sek. buzzern</button><button id="reveal">Antwort zeigen</button><button id="next">Frage abschließen</button></div><div id="award" class="hidden"></div></div>
+</section></main><script src="/socket.io/socket.io.js"></script><script>
+const $=id=>document.getElementById(id), socket=io();let me=null,roomState=null,isHost=false;
+const cats=["Sport","Flaggen","Allgemeinwissen","Gaming","Zurück in die Schule","Marken"],vals=[100,200,300,400,500];
+function msg(t){$("message").textContent=t}
+function act(event,data={}){return new Promise(resolve=>socket.emit(event,data,resolve))}
+$("create").onclick=async()=>{const r=await act("createRoom",{name:$("name").value});if(r?.ok){me=socket.id;enter(r.code,r.state)}else msg(r?.error||"Fehler beim Erstellen.")};
+$("join").onclick=async()=>{const r=await act("joinRoom",{name:$("name").value,code:$("code").value});if(r?.ok){me=socket.id;enter(r.code,r.state)}else msg(r?.error||"Beitritt fehlgeschlagen.")};
+function enter(code,s){$("entry").classList.add("hidden");$("game").classList.remove("hidden");$("roomcode").textContent=code;render(s)}
+$("copy").onclick=()=>navigator.clipboard?.writeText($("roomcode").textContent);
+$("start").onclick=async()=>{const r=await act("startGame");if(!r?.ok)alert(r?.error||"Konnte nicht starten.")};
+$("buzz").onclick=async()=>{const r=await act("buzz");if(!r?.ok)msg(r.error)};
+$("wrong").onclick=()=>socket.emit("markWrong");$("reveal").onclick=()=>socket.emit("revealAnswer");$("next").onclick=()=>socket.emit("nextQuestion");
+socket.on("state",s=>{roomState=s;if(!me)me=socket.id;render(s)});
+function render(s){if(!s)return;isHost=s.players.some(p=>p.id===socket.id&&p.host);$("role").textContent=isHost?"Du bist Host":"Du bist Mitspieler";
+$("hosttools").classList.toggle("hidden",!isHost);$("boardwrap").classList.toggle("hidden",!isHost||s.status!=="game"||!!s.current);
+$("start").classList.toggle("hidden",!isHost||s.status!=="lobby");
+$("scores").innerHTML=s.players.map(p=>`<div class="player">${esc(p.name)}${p.host?" 👑":""}<br><b>${p.score} Punkte</b></div>`).join("");
+$("board").innerHTML=cats.map(c=>`<div><b>${esc(c)}</b>${vals.map(v=>{const used=s.used.includes(c+"|"+v);return `<button class="cell ${used?"used":""}" ${used||!!s.current?"disabled":""} data-cat="${esc(c)}" data-val="${v}">${v}</button>`}).join("")}</div>`).join("");
+document.querySelectorAll("[data-cat]").forEach(b=>b.onclick=async()=>{const r=await act("chooseQuestion",{category:b.dataset.cat,value:Number(b.dataset.val)});if(!r?.ok)msg(r.error)});
+$("questionbox").classList.toggle("hidden",!s.current);
+if(s.current){$("qmeta").textContent=`${s.current.category} · ${s.current.value} Punkte`;$("question").textContent=s.current.question;$("answer").textContent=s.reveal?"Antwort: "+s.current.answer:"";
+$("buzz").classList.toggle("hidden",isHost);$("buzz").disabled=!s.buzzOpen||!!s.buzzWinner;$("buzzstatus").textContent=s.buzzWinner?"Gebuzzert von: "+(s.players.find(p=>p.id===s.buzzWinner)?.name||"Spieler"):s.buzzOpen?"JETZT BUZZERN!":"Buzzer geschlossen";
+$("hostcontrols").classList.toggle("hidden",!isHost);$("award").classList.toggle("hidden",!isHost);
+$("award").innerHTML=s.players.map(p=>`<div class="row"><span>${esc(p.name)} (${p.score})</span><button data-player="${p.id}" data-delta="${s.current.value}">+${s.current.value}</button><button data-player="${p.id}" data-delta="${-s.current.value}">−${s.current.value}</button></div>`).join("");
+document.querySelectorAll("[data-player]").forEach(b=>b.onclick=()=>socket.emit("awardPoints",{playerId:b.dataset.player,delta:Number(b.dataset.delta)}));
+}}
+function esc(x){return String(x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+socket.on("connect",()=>{if(!me)me=socket.id});
+socket.on("connect_error",()=>msg("Verbindung fehlgeschlagen. Seite neu laden und erneut versuchen."));
+</script></body></html>
